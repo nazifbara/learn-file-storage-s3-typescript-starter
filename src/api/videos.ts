@@ -8,6 +8,45 @@ import { getVideo, updateVideo } from "../db/videos";
 import { type ApiConfig } from "../config";
 import path from "node:path";
 
+async function getVideoAspectRatio(filePath: string) {
+  const process = Bun.spawn(
+    [
+      "ffprobe",
+      "-v",
+      "error",
+      "-select_streams",
+      "v:0",
+      "-show_entries",
+      "stream=width,height",
+      "-of",
+      "json",
+      filePath,
+    ],
+    { stdout: "pipe" },
+  );
+
+  if ((await process.exited) !== 0) {
+    throw new Error(await new Response(process.stderr).text());
+  }
+
+  const stdoutText = await new Response(process.stdout).text();
+
+  const { width, height } = JSON.parse(stdoutText).streams[0] as {
+    width: number;
+    height: number;
+  };
+
+  const aspectRatio = width / height;
+
+  if (aspectRatio > 1.75 && aspectRatio < 1.79) {
+    return "landscape";
+  } else if (aspectRatio > 0.54 && aspectRatio < 0.58) {
+    return "portrait";
+  } else {
+    return "other";
+  }
+}
+
 export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
   const MAX_UPLOAD_SIZE = 1 << 30;
 
@@ -48,11 +87,20 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
   console.log("uploading video", videoId, "by user", userID);
 
   const extension = file.type.split("/")[1];
-  const fileKey = `${randomBytes(32).toString("base64url")}.${extension}`;
-  await cfg.s3Client.write(fileKey, await file.arrayBuffer(), {
+  const fileName = `${randomBytes(32).toString("base64url")}.${extension}`;
+  const buffer = await file.arrayBuffer();
+  const tempFilePath = path.join(".", "./tmp/" + fileName);
+  await Bun.write(tempFilePath, buffer);
+
+  const aspectRation = await getVideoAspectRatio(tempFilePath);
+  const fileKey = `${aspectRation}/${fileName}`;
+
+  const tempFile = Bun.file(tempFilePath);
+
+  await cfg.s3Client.write(fileKey, tempFile, {
     type: file.type,
   });
-
+  await tempFile.delete();
   videoMeta.videoURL = `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${fileKey}`;
 
   updateVideo(cfg.db, videoMeta);
