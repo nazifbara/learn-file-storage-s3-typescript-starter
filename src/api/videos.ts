@@ -8,6 +8,32 @@ import { getVideo, updateVideo } from "../db/videos";
 import { type ApiConfig } from "../config";
 import path from "node:path";
 
+async function processVideoForFastStart(inputFilePath: string) {
+  const outputFilePath = inputFilePath + ".processed";
+  const process = Bun.spawn({
+    cmd: [
+      "ffmpeg",
+      "-i",
+      inputFilePath,
+      "-movflags",
+      "faststart",
+      "-map_metadata",
+      "0",
+      "-codec",
+      "copy",
+      "-f",
+      "mp4",
+      outputFilePath,
+    ],
+  });
+
+  if ((await process.exited) !== 0) {
+    throw new Error(await new Response(process.stderr).text());
+  }
+
+  return outputFilePath;
+}
+
 async function getVideoAspectRatio(filePath: string) {
   const process = Bun.spawn(
     [
@@ -91,19 +117,21 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
   const buffer = await file.arrayBuffer();
   const tempFilePath = path.join(".", "./tmp/" + fileName);
   await Bun.write(tempFilePath, buffer);
+  const processedFilePath = await processVideoForFastStart(tempFilePath);
+  const tempFile = Bun.file(tempFilePath);
+  const processedFile = Bun.file(processedFilePath);
 
-  const aspectRation = await getVideoAspectRatio(tempFilePath);
+  const aspectRation = await getVideoAspectRatio(processedFilePath);
   const fileKey = `${aspectRation}/${fileName}`;
 
-  const tempFile = Bun.file(tempFilePath);
-
-  await cfg.s3Client.write(fileKey, tempFile, {
+  await cfg.s3Client.write(fileKey, processedFile, {
     type: file.type,
   });
-  await tempFile.delete();
   videoMeta.videoURL = `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${fileKey}`;
 
   updateVideo(cfg.db, videoMeta);
 
+  tempFile.delete();
+  processedFile.delete();
   return respondWithJSON(200, null);
 }
