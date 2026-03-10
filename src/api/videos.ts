@@ -73,17 +73,6 @@ async function getVideoAspectRatio(filePath: string) {
   }
 }
 
-function generatePresignedURL(cfg: ApiConfig, key: string, expireTime: number) {
-  return cfg.s3Client.presign(key, { expiresIn: expireTime });
-}
-
-export function dbVideoToSignedVideo(cfg: ApiConfig, video: Video) {
-  const presignedVideo = { ...video };
-  presignedVideo.videoURL = presignedVideo.videoURL
-    ? generatePresignedURL(cfg, presignedVideo.videoURL, 3600)
-    : undefined;
-  return presignedVideo;
-}
 export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
   const MAX_UPLOAD_SIZE = 1 << 30;
 
@@ -138,11 +127,11 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
   await cfg.s3Client.write(fileKey, processedFile, {
     type: file.type,
   });
-  videoMeta.videoURL = fileKey;
+  videoMeta.videoURL = `https://${cfg.s3CfDistribution}/${fileKey}`;
 
   updateVideo(cfg.db, videoMeta);
 
   tempFile.delete();
   processedFile.delete();
-  return respondWithJSON(200, dbVideoToSignedVideo(cfg, videoMeta));
+  return respondWithJSON(200, null);
 }
